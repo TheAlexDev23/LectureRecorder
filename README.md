@@ -61,3 +61,17 @@ Verified on September 13, 2026 against official documentation and the installed 
 - [OpenAI: Codex non-interactive mode, JSON events and structured final reports](https://learn.chatgpt.com/docs/non-interactive-mode)
 - [OpenAI: GPT-5.6 Terra model](https://developers.openai.com/api/docs/models/gpt-5.6-terra)
 - [Obsidian: Bases syntax](https://obsidian.md/help/bases/syntax)
+
+## Commit workflow and installed app
+
+The local repository now uses `.githooks/pre-commit`. Every normal `git commit` runs the Swift tests, builds and signs the release `.app`, checks the installer using a temporary directory, then updates `/Applications/Lecture Recorder.app`. A failure aborts the commit. The installer stages and verifies the replacement before moving it into place, refuses an unrelated app at that path, and restores the previous app if replacement fails. It does not quit or relaunch a running app; reopen it after finishing your recording to use the update.
+
+Run `./scripts/check-and-install.sh` to do this without making a commit. Run `./scripts/enable-hooks.sh` once after a fresh clone; Git does not clone local hook configuration. `git commit --no-verify` skips this workflow. The hook tests and installs the **current working tree**, including unstaged edits. Installation happens before Git finishes the commit, so a later commit-message/signing failure does not undo the app update. Build outputs remain ignored by Git. No automatic commit is created by these scripts.
+
+## Experimenting without clutter
+
+Opening the app and looking through its UI creates only its small local library/settings under `~/Library/Application Support/LectureRecorder`; it does not create course folders until you add a course. For experiments, create one disposable folder outside the repository, for example `~/Desktop/LectureRecorder Scratch Vault`, and select it as your vault. It does not need to be an existing Obsidian vault for the recorder to write files.
+
+All trial course notes, transcripts, attachments and Bases then stay in that scratch folder. Recordings and processing-job snapshots stay under `~/Library/Application Support/LectureRecorder`. Nothing from recording or processing goes into this repository unless you deliberately choose a vault inside it. `.build/` and `build/` are the only normal generated repository folders and are ignored by Git.
+
+To discard a trial-only setup, quit the app, delete the scratch vault folder, and delete `~/Library/Application Support/LectureRecorder`. The next launch starts fresh. **Do not delete the whole Application Support folder once it contains real recordings or courses you want to retain.** Removing a course in the UI only archives it; it is not a disk cleanup action. Merely exploring the UI does not start Codex; processing remains manual and can use your account quota.

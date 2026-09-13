@@ -160,3 +160,18 @@ Missing materials also produce a local queue warning before any model call, so y
 The code compiles against Xcode 26.2. Automated tests exercise local storage and a fake two-lecture Codex job. Before relying on it for a full lecture, test a short microphone session and a real Codex run; after upgrading to macOS 26, verify live speech, stop/finalization and retry from an existing audio file with your chosen locale. Neither a live macOS 26 speech session nor a paid Codex run was performed while building this version.
 
 Publication preflights all changed files and rolls back ordinary write errors. A power loss or force quit during the final multi-file write can still leave a partial publication; the retained `Before/` copy is the recovery source. Agent preservation of existing personal edits is a prompt requirement, while preservation against concurrent external edits is enforced by byte comparisons. A successful model response does not prove every academic claim or citation is correct.
+
+## Math and CS notation
+
+The agent is explicitly encouraged to use Obsidian's MathJax/LaTeX notation for formulas, asymptotic bounds, recurrences, matrices, sets, invariants, proofs and derivations. Inline math uses one dollar sign on each side (`$T(n) = O(n \log n)$`); display math uses double dollar signs on their own lines:
+
+```markdown
+$$
+\begin{aligned}
+T(n) &= 2T(n/2) + n \\
+     &= O(n \log n)
+\end{aligned}
+$$
+```
+
+That example assumes the usual constant base case and the relevant recurrence conditions; the agent must state assumptions from the actual lecture. Generated equations are not wrapped in code fences (the fence above just illustrates Markdown). The agent must explain notation, cite formula/proof sources and flag uncertain spoken symbols instead of guessing. Parenthesis/bracket LaTeX delimiters are excluded in favor of Obsidian's dollar-sign syntax. See [Obsidian's official math documentation](https://obsidian.md/help/advanced-syntax).
