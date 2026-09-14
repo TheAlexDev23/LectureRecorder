@@ -6,6 +6,7 @@ struct Course: Codable, Identifiable, Hashable {
     var name: String
     var directory: String
     var archived = false
+    var textbooks: [Textbook]? = nil // Optional for libraries saved before textbook support.
 }
 struct WordTiming: Codable, Equatable {
     var start: Double

@@ -8,6 +8,7 @@ import AppKit
     @Published var recordingID: UUID?
     @Published var busyRecording = false
     @Published var banner: String?
+    @Published var importingTextbooks: Set<UUID> = []
     @Published var fatalStorageError = false
     let root: URL
     let recorder = Recorder()
@@ -36,7 +37,7 @@ import AppKit
     }
     var currentCourse: Course? { library.courses.first { $0.id == selectedCourse } }
     var currentLecture: Lecture? { library.lectures.first { $0.id == selectedLecture } }
-    var activeWork: Bool { recordingID != nil || busyRecording || !tasks.isEmpty }
+    var activeWork: Bool { recordingID != nil || busyRecording || !tasks.isEmpty || !importingTextbooks.isEmpty }
     func save() {
         guard !fatalStorageError else { return }
         do {
@@ -75,13 +76,13 @@ import AppKit
         library.courses.append(course); selectedCourse = course.id; selectedLecture = nil; save()
     }
     func archiveCourse(_ id: UUID, archived: Bool) {
-        guard !isProcessing(id), !library.lectures.contains(where: { $0.courseID == id && $0.id == recordingID }) else { return }
+        guard !isProcessing(id), !importingTextbooks.contains(id), !library.lectures.contains(where: { $0.courseID == id && $0.id == recordingID }) else { return }
         if let index = library.courses.firstIndex(where: { $0.id == id }) { library.courses[index].archived = archived }
         if archived && selectedCourse == id { selectedCourse = nil; selectedLecture = nil }
         save()
     }
     func forgetArchivedCourse(_ id: UUID) {
-        guard let course = library.courses.first(where: { $0.id == id }), course.archived, !isProcessing(id),
+        guard let course = library.courses.first(where: { $0.id == id }), course.archived, !isProcessing(id), !importingTextbooks.contains(id),
               !library.lectures.contains(where: { $0.courseID == id && $0.id == recordingID }) else { return }
         library.lectures.removeAll { $0.courseID == id }
         library.jobs.removeAll { $0.courseID == id }
@@ -156,12 +157,30 @@ import AppKit
             } catch { banner = "Could not attach \(url.lastPathComponent): \(error.localizedDescription)" }
         }
     }
+    func importTextbooks(_ urls: [URL], courseID: UUID) async {
+        guard !fatalStorageError, !isProcessing(courseID), !importingTextbooks.contains(courseID),
+              let course = library.courses.first(where: { $0.id == courseID }), !course.archived else { return }
+        importingTextbooks.insert(courseID)
+        defer { importingTextbooks.remove(courseID) }
+        var failures: [String] = []
+        for url in urls {
+            do {
+                let book = try await Task.detached(priority: .utility) { try TextbookImporter.importPDF(url, course: course) }.value
+                if let index = library.courses.firstIndex(where: { $0.id == courseID }) {
+                    library.courses[index].textbooks = (library.courses[index].textbooks ?? []) + [book]
+                    save()
+                    if let warning = book.warning { failures.append("\(book.title): \(warning)") }
+                }
+            } catch { failures.append("\(url.lastPathComponent): \(error.localizedDescription)") }
+        }
+        if !failures.isEmpty { banner = failures.joined(separator: "\n") }
+    }
     func isProcessing(_ courseID: UUID) -> Bool { tasks[courseID] != nil }
     func backlog(_ courseID: UUID) -> [Lecture] { library.lectures.filter { $0.courseID == courseID && [.queued, .failed].contains($0.status) && $0.transcriptPath != nil }.sorted { $0.number < $1.number } }
     func processAll() { for course in library.courses where !course.archived { processCourse(course.id) } }
     func processCourse(_ courseID: UUID) {
         let lectures = backlog(courseID)
-        guard !fatalStorageError, !lectures.isEmpty, tasks[courseID] == nil, let course = library.courses.first(where: { $0.id == courseID }), !library.lectures.contains(where: { $0.courseID == courseID && [.recording, .transcribing].contains($0.status) }) else { return }
+        guard !fatalStorageError, !lectures.isEmpty, tasks[courseID] == nil, !importingTextbooks.contains(courseID), let course = library.courses.first(where: { $0.id == courseID }), !library.lectures.contains(where: { $0.courseID == courseID && [.recording, .transcribing].contains($0.status) }) else { return }
         let jobID = UUID()
         let directory = root.appendingPathComponent("Jobs/\(jobID.uuidString)")
         var job = Job(id: jobID, courseID: courseID, lectureIDs: lectures.map(\.id), directory: directory.path)
@@ -187,12 +206,16 @@ import AppKit
                 stagedCourse.directory = workspace.path
                 try Vault.initialize(stagedCourse)
                 let backlog = lectures.map { BacklogItem(id: $0.id.uuidString, number: $0.number, title: $0.title, transcript: $0.transcriptPath!, materials: $0.materials.map(\.relativePath), personalNotes: "Personal Notes/\(course.code) LEC \($0.number) - Personal Notes.md") }
+                let textbookData = try JSONEncoder().encode(course.textbooks ?? [])
+                try textbookData.write(to: workspace.appendingPathComponent("textbooks.json"))
                 let backlogData = try JSONEncoder().encode(backlog)
                 try backlogData.write(to: workspace.appendingPathComponent("backlog.json"))
                 let report = try await runner.run(jobID: jobID, executable: library.settings.codexPath, directory: directory) {}
                 guard Set(report.completedLectureIDs).isSubset(of: Set(lectures.map { $0.id.uuidString })) else { throw AppFailure("Agent report contains unknown lecture IDs.") }
                 guard report.issues.allSatisfy({ issue in issue.lectureID.isEmpty || lectures.contains(where: { $0.id.uuidString == issue.lectureID }) }) else { throw AppFailure("Agent reported an issue for an unknown lecture.") }
                 guard try Data(contentsOf: workspace.appendingPathComponent("backlog.json")) == backlogData else { throw AppFailure("Agent modified the job manifest.") }
+                guard try Data(contentsOf: workspace.appendingPathComponent("textbooks.json")) == textbookData else { throw AppFailure("Agent modified the textbook manifest.") }
+                try FileManager.default.removeItem(at: workspace.appendingPathComponent("textbooks.json"))
                 try FileManager.default.removeItem(at: workspace.appendingPathComponent("backlog.json"))
                 for lecture in lectures where report.completedLectureIDs.contains(lecture.id.uuidString) {
                     let note = workspace.appendingPathComponent("Lectures/\(course.code) LEC \(lecture.number).md")

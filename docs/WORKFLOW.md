@@ -6,6 +6,8 @@ The app records locally, publishes finalized source transcripts into your chosen
 
 There is one Codex process per course per manual run, using `gpt-5.6-terra` at `medium`. All queued or retryable lectures in that course are listed in `backlog.json`, sorted by lecture number. The same agent handles all three phases below without delegation. Multiple selected courses run independently. Clicking Process twice cannot start two agents for the same course.
 
+A separate immutable `textbooks.json` manifest lists class textbooks and their section indexes. The app extracts text once at upload using PDFKit and segments it by bookmarks, detected chapter/part headings, or labeled page ranges (maximum 20 pages per section). The agent consults these only for questions unresolved by lecture materials, reads relevant sections sparingly, and cites PDF pages for clearly labeled supplemental information. Textbooks are excluded from the mandatory attachment categorization phase.
+
 Each backlog entry contains the lecture UUID, number, optional title, transcript path, attached material paths and personal-note path. The transcript frontmatter supplies the date. The agent sees a snapshot of the whole course, including prior topic notes, so it can build concepts across lectures.
 
 The instructions are defined verbatim in `AgentPrompt.instructions` in `Sources/LectureRecorder/AgentRunner.swift`. Every job saves that exact text in `prompt.txt`. The key instructions, in execution order, are:
@@ -48,6 +50,10 @@ Courses/
     │   ├── CSC263 L005 - Slides.pdf
     │   ├── Material Index.md
     │   └── Inbox/<lecture UUID>/<attachment UUID>-original.pdf
+    ├── Textbooks/<book UUID>/
+    │   ├── Original.pdf
+    │   ├── Index.md
+    │   └── Sections/0001.txt
     ├── Personal Notes/
     │   └── CSC263 LEC 5 - Personal Notes.md
     └── Views/

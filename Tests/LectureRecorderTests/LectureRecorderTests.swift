@@ -1,4 +1,6 @@
 import XCTest
+import PDFKit
+import CoreText
 @testable import LectureRecorder
 
 final class LectureRecorderTests: XCTestCase {
@@ -8,6 +10,59 @@ final class LectureRecorderTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     }
     override func tearDownWithError() throws { try FileManager.default.removeItem(at: root) }
+    func makePDF(_ pages: [String], name: String = "Book.pdf") throws -> URL {
+        let url = root.appendingPathComponent(name)
+        var box = CGRect(x: 0, y: 0, width: 600, height: 800)
+        let context = CGContext(url as CFURL, mediaBox: &box, nil)!
+        for text in pages {
+            context.beginPDFPage(nil)
+            context.textPosition = CGPoint(x: 40, y: 720)
+            let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: [.font: NSFont.systemFont(ofSize: 16)]))
+            CTLineDraw(line, context)
+            context.endPDFPage()
+        }
+        context.closePDF()
+        return url
+    }
+    func testTextbookSegmentationCoversPagesAndBoundsReads() {
+        let pages = ["Preface", "Chapter 1 Trees"] + Array(repeating: "content", count: 23) + ["Chapter 2 Graphs", "end"]
+        let sections = TextbookImporter.sections(pages: pages, bookmarks: [])
+        XCTAssertEqual(sections.map(\.start), [0, 1, 21, 25])
+        XCTAssertEqual(sections.flatMap { Array($0.start..<$0.end) }, Array(pages.indices))
+        XCTAssertTrue(sections.allSatisfy { $0.end - $0.start <= 20 })
+        let fallback = TextbookImporter.sections(pages: Array(repeating: "text", count: 45), bookmarks: [])
+        XCTAssertEqual(fallback.map(\.start), [0, 20, 40])
+        XCTAssertTrue(fallback[0].title.contains("unavailable"))
+        let bookmarked = TextbookImporter.sections(pages: pages, bookmarks: [("Second", 25), ("First", 0), ("Duplicate", 0), ("Invalid", 100)])
+        XCTAssertEqual(bookmarked.map(\.start), [0, 20, 25])
+    }
+    func testTextbookImportExtractsPagesAndProtectsInputs() throws {
+        let source = try makePDF(["Chapter 1 Trees", "Balanced trees", "Chapter 2 Graphs", ""])
+        let course = Course(code: "CS", name: "Algorithms", directory: root.appendingPathComponent("course").path)
+        let book = try TextbookImporter.importPDF(source, course: course)
+        let directory = URL(fileURLWithPath: course.directory)
+        XCTAssertEqual(book.sectionCount, 2)
+        XCTAssertTrue(book.warning?.contains("4") == true)
+        XCTAssertEqual(try Data(contentsOf: source), try Data(contentsOf: directory.appendingPathComponent(book.relativePath)))
+        let index = try String(contentsOf: directory.appendingPathComponent(book.indexPath), encoding: .utf8)
+        XCTAssertTrue(index.contains("Chapter 2"))
+        let section = directory.appendingPathComponent(book.indexPath).deletingLastPathComponent().appendingPathComponent("Sections/0001.txt")
+        XCTAssertTrue(try String(contentsOf: section, encoding: .utf8).contains("--- PDF Page 2 ---"))
+        let baseline = try Vault.files(in: directory)
+        let stage = root.appendingPathComponent("stage")
+        try FileManager.default.copyItem(at: directory, to: stage)
+        try Vault.write("tampered", to: stage.appendingPathComponent(book.indexPath))
+        XCTAssertThrowsError(try Vault.publish(workspace: stage, destination: directory, baseline: baseline))
+    }
+    func testUnreadableTextbookLeavesNoPartialImport() throws {
+        let course = Course(code: "CS", name: "Algorithms", directory: root.appendingPathComponent("course").path)
+        XCTAssertThrowsError(try TextbookImporter.importPDF(makePDF([""]), course: course))
+        XCTAssertTrue(try Vault.files(in: URL(fileURLWithPath: course.directory)).isEmpty)
+    }
+    func testLegacyCourseDecodesWithoutTextbooks() throws {
+        let data = Data("{\"id\":\"\(UUID().uuidString)\",\"code\":\"CS\",\"name\":\"Course\",\"directory\":\"/tmp/course\",\"archived\":false}".utf8)
+        XCTAssertNil(try JSONDecoder().decode(Course.self, from: data).textbooks)
+    }
     func testTraversalAndSymlinkRejected() throws {
         XCTAssertThrowsError(try containedURL("../outside", root: root))
         XCTAssertThrowsError(try containedURL("/outside", root: root))
@@ -111,6 +166,8 @@ final class LectureRecorderTests: XCTestCase {
         store.library.settings.vaultPath = root.appendingPathComponent("vault").path
         try store.addCourse(code: "CSC263", name: "Trees")
         let course = store.currentCourse!
+        await store.importTextbooks([try makePDF(["Chapter 1 Trees", "AVL trees"])], courseID: course.id)
+        XCTAssertEqual(Store(root: root).currentCourse?.textbooks?.count, 1)
         for number in [5, 6] {
             var lecture = Lecture(courseID: course.id, number: number, title: "Trees")
             lecture.segments = [Segment(start: 0, end: 2, text: "An AVL tree is balanced.")]
@@ -129,6 +186,11 @@ final class LectureRecorderTests: XCTestCase {
         assert set(schema['required']) == {'completedLectureIDs', 'issues', 'summary'}
         prompt = sys.stdin.read()
         assert 'PHASE 1' in prompt
+        assert 'Use textbooks sparingly' in prompt
+        books = json.loads(pathlib.Path('textbooks.json').read_text())
+        assert len(books) == 1
+        assert pathlib.Path(books[0]['indexPath']).exists()
+        assert 'PDF pages 1' in pathlib.Path(books[0]['indexPath']).read_text()
         backlog = json.loads(pathlib.Path('backlog.json').read_text())
         assert len(backlog) == 2
         for item in backlog:

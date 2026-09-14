@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
     var store: Store?
@@ -8,7 +9,7 @@ import AppKit
         guard store?.activeWork == true else { return .terminateNow }
         let alert = NSAlert()
         alert.messageText = "Work is still active"
-        alert.informativeText = "Stop the recording or cancel the processing jobs before quitting so all work can finish saving."
+        alert.informativeText = "Wait for textbook imports to finish, stop the recording, or cancel processing jobs before quitting so all work can finish saving."
         alert.addButton(withTitle: "Keep Open")
         alert.runModal()
         return .terminateCancel
@@ -33,6 +34,7 @@ struct ContentView: View {
     @State private var addCourse = false
     @State private var newLecture = false
     @State private var queue = false
+    @State private var textbooks = false
     var body: some View {
         NavigationSplitView {
             VStack(alignment: .leading, spacing: 0) {
@@ -94,6 +96,7 @@ struct ContentView: View {
         .onChange(of: store.selectedCourse) { _, _ in store.selectedLecture = nil }
         .sheet(isPresented: $addCourse) { CourseSheet().environmentObject(store) }
         .sheet(isPresented: $newLecture) { LectureSheet().environmentObject(store) }
+        .sheet(isPresented: $textbooks) { if let course = store.currentCourse { TextbooksView(courseID: course.id).environmentObject(store) } }
         .sheet(isPresented: $queue) { QueueView().environmentObject(store) }
     }
     private func courseHeader(_ course: Course) -> some View {
@@ -108,6 +111,7 @@ struct ContentView: View {
                     if let lecture = store.library.lectures.first(where: { $0.id == store.recordingID }) { store.selectedCourse = lecture.courseID; DispatchQueue.main.async { store.selectedLecture = lecture.id } }
                 }
             }
+            Button { textbooks = true } label: { Label("Textbooks (\((course.textbooks ?? []).count))", systemImage: "books.vertical") }
             Button { newLecture = true } label: { Label("New Lecture", systemImage: "mic.fill") }
                 .buttonStyle(.borderedProminent).disabled(store.recordingID != nil || store.busyRecording || store.isProcessing(course.id) || store.fatalStorageError)
         }.padding(22)
@@ -274,7 +278,7 @@ struct QueueView: View {
             Text("Starts only when you choose. One GPT-5.6 Terra agent at medium reasoning handles each course’s complete backlog.").foregroundStyle(.secondary)
             HStack {
                 Button("Process All Queued Courses") { store.processAll() }.buttonStyle(.borderedProminent).disabled(store.library.courses.allSatisfy { store.backlog($0.id).isEmpty || store.isProcessing($0.id) })
-                Text("Transcript and material content is sent to Codex when processing starts.").font(.caption).foregroundStyle(.secondary)
+                Text("Transcripts, materials, and any textbook sections the agent reads are sent to Codex during processing.").font(.caption).foregroundStyle(.secondary)
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
@@ -370,5 +374,56 @@ struct SettingsView: View {
             .onChange(of: store.library.settings.coursesPath) { _, _ in store.save() }
             .onChange(of: store.library.settings.locale) { _, _ in store.save() }
             .onChange(of: store.library.settings.codexPath) { _, _ in store.save() }
+    }
+}
+
+struct TextbooksView: View {
+    @EnvironmentObject var store: Store
+    @Environment(\.dismiss) private var dismiss
+    let courseID: UUID
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            if let course = store.library.courses.first(where: { $0.id == courseID }) {
+                HStack {
+                    Text("\(course.code) Textbooks").font(.title2.bold())
+                    Spacer()
+                    Button("Done") { dismiss() }
+                }
+                Text("Shared across this class. Lecture notes and slides usually suffice; the agent consults textbooks only when a question remains unresolved.").foregroundStyle(.secondary)
+                Text("PDF text is extracted once into chapter or section files. Books without detectable chapters use page ranges. Scanned PDFs need OCR before upload.").font(.caption).foregroundStyle(.secondary)
+                if let banner = store.banner {
+                    Text(banner).font(.caption).foregroundStyle(.orange).lineLimit(3).help(banner)
+                }
+                List(course.textbooks ?? []) { book in
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(book.title).font(.headline)
+                        Text("\(book.sectionCount) extracted sections").font(.caption).foregroundStyle(.secondary)
+                        if let warning = book.warning { Text(warning).font(.caption).foregroundStyle(.orange) }
+                        HStack {
+                            Button("Open PDF") { open(book.relativePath, course: course) }
+                            Button("Open section index") { open(book.indexPath, course: course) }
+                        }.buttonStyle(.link)
+                    }.padding(.vertical, 5)
+                }
+                HStack {
+                    Button("Upload Textbook PDFs…") {
+                        let panel = NSOpenPanel()
+                        panel.allowedContentTypes = [.pdf]
+                        panel.allowsMultipleSelection = true
+                        panel.canChooseDirectories = false
+                        if panel.runModal() == .OK {
+                            let urls = panel.urls
+                            Task { await store.importTextbooks(urls, courseID: courseID) }
+                        }
+                    }.disabled(store.isProcessing(courseID) || store.importingTextbooks.contains(courseID) || store.fatalStorageError)
+                    if store.importingTextbooks.contains(courseID) { ProgressView().controlSize(.small); Text("Extracting textbook text…").font(.caption) }
+                }
+                Text("Available on the next manual processing run. Existing processed lectures are not automatically requeued.").font(.caption).foregroundStyle(.secondary)
+            }
+        }.padding(24).frame(width: 620, height: 460)
+    }
+    private func open(_ path: String, course: Course) {
+        do { NSWorkspace.shared.open(try containedURL(path, root: URL(fileURLWithPath: course.directory))) }
+        catch { store.banner = error.localizedDescription }
     }
 }
