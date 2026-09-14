@@ -29,7 +29,65 @@ enum AgentPrompt {
     Check all generated links and source references, deduplicate topics, and confirm every completed lecture has a nonempty lecture note. Unclear transcription, conflicting evidence, missing materials, failed extraction and any other problem must appear in the structured final report. Each issue needs a unique id, lectureID (a supplied UUID; use empty string for course-wide issues), severity (warning or error), message describing uncertainty and a useful next action, timestamp (or empty string), and source (relative path or empty string). Also place unresolved academic uncertainty in an Obsidian warning callout at the relevant note. Never silently 'correct' ambiguous transcript words. Ground a correction in materials and cite both sources. Include only actually completed lecture UUIDs in completedLectureIDs; omit failed ones. Missing materials alone is a warning and need not prevent a transcript-only summary. Output only JSON matching the supplied schema as your final response, with summary, completedLectureIDs, and issues.
     """
     static let schema = #"""
-    {"type":"object","additionalProperties":false,"required":["completedLectureIDs","issues","summary"],"properties":{"completedLectureIDs":{"type":"array","items":{"type":"string"}},"summary":{"type":"string"},"issues":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["id","lectureID","severity","message","timestamp","source"],"properties":{"id":{"type":"string"},"lectureID":{"type":"string"},"severity":{"type":"string","enum":["warning","error"]},"message":{"type":"string"},"timestamp":{"type":"string"},"source":{"type":"string"}}}}}
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "completedLectureIDs",
+        "issues",
+        "summary"
+      ],
+      "properties": {
+        "completedLectureIDs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "summary": {
+          "type": "string"
+        },
+        "issues": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "lectureID",
+              "severity",
+              "message",
+              "timestamp",
+              "source"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "lectureID": {
+                "type": "string"
+              },
+              "severity": {
+                "type": "string",
+                "enum": [
+                  "warning",
+                  "error"
+                ]
+              },
+              "message": {
+                "type": "string"
+              },
+              "timestamp": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
     """#
 }
 

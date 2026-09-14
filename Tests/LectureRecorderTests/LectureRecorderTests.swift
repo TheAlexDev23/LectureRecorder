@@ -74,6 +74,30 @@ final class LectureRecorderTests: XCTestCase {
         XCTAssertTrue(restored.library.courses[0].archived)
         XCTAssertTrue(FileManager.default.fileExists(atPath: course.directory))
     }
+    @MainActor func testForgetArchivedCourseRemovesRecordsButKeepsFiles() throws {
+        let store = Store(root: root)
+        store.library.settings.vaultPath = root.appendingPathComponent("vault").path
+        try store.addCourse(code: "CS135", name: "Test Course")
+        let course = store.currentCourse!
+        let lecture = Lecture(courseID: course.id, number: 1, title: "Test")
+        let audio = store.audioURL(lecture.id)
+        let jobDirectory = root.appendingPathComponent("Jobs/test-job")
+        try Vault.write("audio", to: audio)
+        try Vault.write("job output", to: jobDirectory.appendingPathComponent("report.json"))
+        store.library.lectures.append(lecture)
+        store.library.jobs.append(Job(courseID: course.id, lectureIDs: [lecture.id], directory: jobDirectory.path))
+        store.archiveCourse(course.id, archived: true)
+
+        store.forgetArchivedCourse(course.id)
+
+        XCTAssertFalse(store.library.courses.contains { $0.id == course.id })
+        XCTAssertFalse(store.library.lectures.contains { $0.courseID == course.id })
+        XCTAssertFalse(store.library.jobs.contains { $0.courseID == course.id })
+        XCTAssertTrue(FileManager.default.fileExists(atPath: course.directory))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: audio.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: jobDirectory.path))
+        XCTAssertNoThrow(try store.addCourse(code: "CS135", name: "Real Course"))
+    }
     @MainActor func testCorruptLibraryIsNotOverwritten() throws {
         let file = root.appendingPathComponent("library.json")
         try Vault.write("broken input", to: file)
@@ -100,6 +124,9 @@ final class LectureRecorderTests: XCTestCase {
         args = sys.argv[1:]
         assert args[args.index('--model')+1] == 'gpt-5.6-terra'
         assert 'model_reasoning_effort="medium"' in args
+        schema = json.loads(pathlib.Path(args[args.index('--output-schema')+1]).read_text())
+        assert schema['type'] == 'object'
+        assert set(schema['required']) == {'completedLectureIDs', 'issues', 'summary'}
         prompt = sys.stdin.read()
         assert 'PHASE 1' in prompt
         backlog = json.loads(pathlib.Path('backlog.json').read_text())

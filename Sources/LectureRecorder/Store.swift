@@ -80,6 +80,15 @@ import AppKit
         if archived && selectedCourse == id { selectedCourse = nil; selectedLecture = nil }
         save()
     }
+    func forgetArchivedCourse(_ id: UUID) {
+        guard let course = library.courses.first(where: { $0.id == id }), course.archived, !isProcessing(id),
+              !library.lectures.contains(where: { $0.courseID == id && $0.id == recordingID }) else { return }
+        library.lectures.removeAll { $0.courseID == id }
+        library.jobs.removeAll { $0.courseID == id }
+        library.courses.removeAll { $0.id == id }
+        if selectedCourse == id { selectedCourse = nil; selectedLecture = nil }
+        save()
+    }
     func audioURL(_ id: UUID) -> URL { root.appendingPathComponent("Recordings/\(id.uuidString).caf") }
     func startLecture(number: Int, title: String) async throws {
         guard !fatalStorageError, recordingID == nil, !busyRecording, let course = currentCourse, !isProcessing(course.id) else { throw AppFailure("A recording or course job is already active.") }

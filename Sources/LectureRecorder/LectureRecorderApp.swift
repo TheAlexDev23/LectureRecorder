@@ -325,6 +325,7 @@ struct QueueView: View {
 }
 struct SettingsView: View {
     @EnvironmentObject var store: Store
+    @State private var courseToForget: Course?
     var body: some View {
         Form {
             Section("Obsidian") {
@@ -346,9 +347,24 @@ struct SettingsView: View {
             Section("Local Library") {
                 Button("Show Recordings, Jobs & Backups") { NSWorkspace.shared.open(store.root) }
                 Text("Audio stays in Application Support. Transcripts, personal notes and material copies are saved in your course folder. Removing a course archives it in the app and keeps all files.").font(.caption).foregroundStyle(.secondary)
-                ForEach(store.library.courses.filter(\.archived)) { course in HStack { Text(course.code); Spacer(); Button("Restore") { store.archiveCourse(course.id, archived: false) } } }
+                ForEach(store.library.courses.filter(\.archived)) { course in
+                    HStack {
+                        Text(course.code)
+                        Spacer()
+                        Button("Restore") { store.archiveCourse(course.id, archived: false) }
+                        Button("Forget…", role: .destructive) { courseToForget = course }
+                    }
+                }
             }
         }.formStyle(.grouped).padding(12).frame(width: 640, height: 560)
+            .alert(item: $courseToForget) { course in
+                Alert(
+                    title: Text("Forget \(course.code)?"),
+                    message: Text("This removes the course, its lectures, and its job history from Lecture Recorder. Course files, recordings, and job folders stay on disk."),
+                    primaryButton: .destructive(Text("Forget Course")) { store.forgetArchivedCourse(course.id) },
+                    secondaryButton: .cancel()
+                )
+            }
             .onDisappear { store.save() }
             .onChange(of: store.library.settings.vaultPath) { _, _ in store.save() }
             .onChange(of: store.library.settings.coursesPath) { _, _ in store.save() }
