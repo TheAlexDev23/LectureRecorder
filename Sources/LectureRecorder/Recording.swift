@@ -114,12 +114,14 @@ final class AudioSink: @unchecked Sendable {
     private var sleepActivity: NSObjectProtocol?
     private(set) var isPaused = false
     var duration: TimeInterval { sink?.duration ?? 0 }
-    func start(url: URL, locale: String, onSegments: @escaping @MainActor ([Segment]) -> Void, onError: @escaping @MainActor (String) -> Void) async throws -> String? {
+    func start(url: URL, locale: String, liveTranscription: Bool = true, onSegments: @escaping @MainActor ([Segment]) -> Void, onError: @escaping @MainActor (String) -> Void) async throws -> String? {
         guard await AVCaptureDevice.requestAccess(for: .audio) else { throw AppFailure("Microphone access was denied. Enable Lecture Recorder in System Settings → Privacy & Security → Microphone.") }
         var output: AVAudioFormat?
         var deliver: ((AVAudioPCMBuffer) -> Void)?
         var warning: String?
-        if #available(macOS 26.0, *) {
+        if !liveTranscription {
+            warning = "Microsoft transcription runs after you stop recording. Live transcription is unavailable in Microsoft mode."
+        } else if #available(macOS 26.0, *) {
             let session = SpeechSession()
             do {
                 try await session.prepare(locale: locale, onSegments: onSegments)

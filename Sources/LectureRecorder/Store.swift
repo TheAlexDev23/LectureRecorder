@@ -92,17 +92,20 @@ import AppKit
         save()
     }
     func audioURL(_ id: UUID) -> URL { root.appendingPathComponent("Recordings/\(id.uuidString).caf") }
-    func startLecture(number: Int, title: String) async throws {
+    func startLecture(number: Int, title: String, kind: SessionKind = .lecture) async throws {
         guard !fatalStorageError, recordingID == nil, !busyRecording, let course = currentCourse, !isProcessing(course.id) else { throw AppFailure("A recording or course job is already active.") }
-        guard number > 0, !library.lectures.contains(where: { $0.courseID == course.id && $0.number == number }) else { throw AppFailure("Choose a positive, unused lecture number for this course.") }
-        var lecture = Lecture(courseID: course.id, number: number, title: title)
+        if library.settings.selectedTranscriptionProvider == .microsoft, OpenRouterKeychain.read() == nil {
+            throw AppFailure("Add your OpenRouter API key in Settings before recording with Microsoft transcription.")
+        }
+        guard number > 0, !library.lectures.contains(where: { $0.courseID == course.id && $0.sessionKind == kind && $0.number == number }) else { throw AppFailure("Choose a positive, unused \(kind.label.lowercased()) number for this course.") }
+        var lecture = Lecture(courseID: course.id, number: number, kind: kind, title: title)
         try FileManager.default.createDirectory(at: audioURL(lecture.id).deletingLastPathComponent(), withIntermediateDirectories: true)
         busyRecording = true
         defer { busyRecording = false }
         library.lectures.append(lecture); selectedLecture = lecture.id; save()
         do {
             let id = lecture.id
-            let warning = try await recorder.start(url: audioURL(id), locale: library.settings.locale) { [weak self] segments in
+            let warning = try await recorder.start(url: audioURL(id), locale: library.settings.locale, liveTranscription: library.settings.selectedTranscriptionProvider == .apple) { [weak self] segments in
                 self?.editLecture(id) { $0.segments.append(contentsOf: segments) }
             } onError: { [weak self] message in
                 self?.editLecture(id) { $0.error = message }
@@ -135,7 +138,14 @@ import AppKit
             try await recorder.stop()
             editLecture(id) { $0.duration = duration }
             guard let lecture = library.lectures.first(where: { $0.id == id }) else { return }
-            if lecture.error != nil || lecture.segments.isEmpty {
+            if library.settings.selectedTranscriptionProvider == .microsoft {
+                editLecture(id) { $0.status = .transcribing; $0.error = nil }
+                recordingID = nil
+                recordingPaused = false
+                let fresh = try await MicrosoftTranscriber.transcribe(file: audioURL(id), locale: library.settings.locale, duration: duration)
+                editLecture(id) { $0.segments = fresh; $0.transcriptionSource = "microsoft-mai-transcribe-2" }
+                try exportAndQueue(id)
+            } else if lecture.error != nil || lecture.segments.isEmpty {
                 editLecture(id) { $0.status = .needsTranscription; if $0.error == nil { $0.error = "No speech was recognized. Retry transcription from audio." } }
             } else { try exportAndQueue(id) }
         } catch { editLecture(id) { $0.duration = duration; $0.status = .needsTranscription; $0.error = error.localizedDescription }; banner = error.localizedDescription }
@@ -151,9 +161,13 @@ import AppKit
         editLecture(id) { $0.status = .transcribing; $0.error = nil }
         var fresh: [Segment] = []
         do {
-            try await recorder.retry(url: audioURL(id), locale: library.settings.locale) { segments in fresh.append(contentsOf: segments) }
+            if library.settings.selectedTranscriptionProvider == .microsoft {
+                fresh = try await MicrosoftTranscriber.transcribe(file: audioURL(id), locale: library.settings.locale, duration: lecture.duration)
+            } else {
+                try await recorder.retry(url: audioURL(id), locale: library.settings.locale) { segments in fresh.append(contentsOf: segments) }
+            }
             guard !fresh.isEmpty else { throw AppFailure("No speech recognized. Check the saved recording and language setting.") }
-            editLecture(id) { $0.segments = fresh }
+            editLecture(id) { $0.segments = fresh; $0.transcriptionSource = library.settings.selectedTranscriptionProvider == .microsoft ? "microsoft-mai-transcribe-2" : "apple-speech-analyzer" }
             try exportAndQueue(id)
         } catch { editLecture(id) { $0.status = .needsTranscription; $0.error = error.localizedDescription }; banner = error.localizedDescription }
         busyRecording = false
@@ -186,7 +200,7 @@ import AppKit
         if !failures.isEmpty { banner = failures.joined(separator: "\n") }
     }
     func isProcessing(_ courseID: UUID) -> Bool { tasks[courseID] != nil }
-    func backlog(_ courseID: UUID) -> [Lecture] { library.lectures.filter { $0.courseID == courseID && [.queued, .failed].contains($0.status) && $0.transcriptPath != nil }.sorted { $0.number < $1.number } }
+    func backlog(_ courseID: UUID) -> [Lecture] { library.lectures.filter { $0.courseID == courseID && [.queued, .failed].contains($0.status) && $0.transcriptPath != nil }.sorted { $0.date < $1.date } }
     func processAll() { for course in library.courses where !course.archived { processCourse(course.id) } }
     func processCourse(_ courseID: UUID) {
         let lectures = backlog(courseID)
@@ -215,7 +229,7 @@ import AppKit
                 var stagedCourse = course
                 stagedCourse.directory = workspace.path
                 try Vault.initialize(stagedCourse)
-                let backlog = lectures.map { BacklogItem(id: $0.id.uuidString, number: $0.number, title: $0.title, transcript: $0.transcriptPath!, materials: $0.materials.map(\.relativePath), personalNotes: "Personal Notes/\(course.code) LEC \($0.number) - Personal Notes.md") }
+                let backlog = lectures.map { BacklogItem(id: $0.id.uuidString, kind: $0.sessionKind.rawValue, number: $0.number, stem: $0.stem, title: $0.title, transcript: $0.transcriptPath!, materials: $0.materials.map(\.relativePath), personalNotes: "Personal Notes/\(course.code) \($0.stem) - Personal Notes.md") }
                 let textbookData = try JSONEncoder().encode(course.textbooks ?? [])
                 try textbookData.write(to: workspace.appendingPathComponent("textbooks.json"))
                 let backlogData = try JSONEncoder().encode(backlog)
@@ -228,8 +242,8 @@ import AppKit
                 try FileManager.default.removeItem(at: workspace.appendingPathComponent("textbooks.json"))
                 try FileManager.default.removeItem(at: workspace.appendingPathComponent("backlog.json"))
                 for lecture in lectures where report.completedLectureIDs.contains(lecture.id.uuidString) {
-                    let note = workspace.appendingPathComponent("Lectures/\(course.code) LEC \(lecture.number).md")
-                    guard let text = try? String(contentsOf: note, encoding: .utf8), text.count > 80, text.contains(lecture.id.uuidString) else { throw AppFailure("Agent did not produce a valid lecture note for LEC \(lecture.number).") }
+                    let note = workspace.appendingPathComponent("Lectures/\(course.code) \(lecture.stem).md")
+                    guard let text = try? String(contentsOf: note, encoding: .utf8), text.count > 80, text.contains(lecture.id.uuidString) else { throw AppFailure("Agent did not produce a valid session note for \(lecture.stem).") }
                 }
                 try Vault.publish(workspace: workspace, destination: source, baseline: baseline)
                 for lecture in lectures {

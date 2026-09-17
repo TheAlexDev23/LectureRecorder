@@ -21,6 +21,17 @@ struct Segment: Codable, Identifiable, Equatable {
     var wordTimings: [WordTiming]? = nil
 }
 enum LectureStatus: String, Codable { case recording, needsTranscription, transcribing, queued, processing, processed, failed }
+enum SessionKind: String, Codable, CaseIterable, Identifiable {
+    case lecture, tutorial
+    var id: Self { self }
+    var label: String { self == .lecture ? "Lecture" : "Tutorial" }
+    var prefix: String { self == .lecture ? "LEC" : "TUT" }
+}
+enum TranscriptionProvider: String, Codable, CaseIterable, Identifiable {
+    case apple, microsoft
+    var id: Self { self }
+    var label: String { self == .apple ? "Apple (local)" : "Microsoft MAI-Transcribe-2 (OpenRouter)" }
+}
 struct Material: Codable, Identifiable {
     var id = UUID()
     var originalName: String
@@ -30,6 +41,7 @@ struct Lecture: Codable, Identifiable {
     var id = UUID()
     var courseID: UUID
     var number: Int
+    var kind: SessionKind? = nil // Optional so libraries created before tutorial support still decode.
     var title: String
     var date = Date()
     var status: LectureStatus = .recording
@@ -39,7 +51,9 @@ struct Lecture: Codable, Identifiable {
     var error: String?
     var duration: Double = 0
     var transcriptPath: String?
-    var stem: String { "LEC \(number)" }
+    var transcriptionSource: String? = nil
+    var sessionKind: SessionKind { kind ?? .lecture }
+    var stem: String { "\(sessionKind.prefix) \(number)" }
 }
 struct AgentIssue: Codable, Identifiable {
     var id: String
@@ -69,6 +83,8 @@ struct Settings: Codable {
     var coursesPath = "Courses"
     var locale = "en-CA"
     var codexPath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/codex").path
+    var transcriptionProvider: TranscriptionProvider? = nil // Missing in older libraries means Apple.
+    var selectedTranscriptionProvider: TranscriptionProvider { transcriptionProvider ?? .apple }
 }
 struct Library: Codable {
     var courses: [Course] = []

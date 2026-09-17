@@ -48,7 +48,7 @@ struct Vault {
         }
     }
     static func export(_ lecture: Lecture, course: Course) throws -> String {
-        let name = "\(course.code) LEC \(lecture.number)"
+        let name = "\(course.code) \(lecture.stem)"
         let relative = "Transcripts/\(name) - Transcript.md"
         let text = lecture.segments.enumerated().map { index, segment in
             "**[\(timestamp(segment.start))–\(timestamp(segment.end))]** \(segment.text) ^t\(index + 1)"
@@ -57,10 +57,11 @@ struct Vault {
         ---
         type: transcript
         course: \(jsonString(course.code))
-        lecture: \(lecture.number)
+        session_kind: \(lecture.sessionKind.rawValue)
+        session_number: \(lecture.number)
         lecture_id: \(jsonString(lecture.id.uuidString))
         date: \(lecture.date.ISO8601Format())
-        transcription: apple-speech-analyzer
+        transcription: \(courseTranscriptionLabel(lecture))
         tags: [university/transcript]
         ---
         # \(name) — Transcript
@@ -78,7 +79,10 @@ struct Vault {
         return relative
     }
     static func exportNotes(_ lecture: Lecture, course: Course) throws {
-        try write("# \(course.code) LEC \(lecture.number) — Personal Notes\n\n\(lecture.notes)\n", to: URL(fileURLWithPath: course.directory).appendingPathComponent("Personal Notes/\(course.code) LEC \(lecture.number) - Personal Notes.md"))
+        try write("# \(course.code) \(lecture.stem) — Personal Notes\n\n\(lecture.notes)\n", to: URL(fileURLWithPath: course.directory).appendingPathComponent("Personal Notes/\(course.code) \(lecture.stem) - Personal Notes.md"))
+    }
+    private static func courseTranscriptionLabel(_ lecture: Lecture) -> String {
+        lecture.transcriptionSource ?? "apple-speech-analyzer"
     }
     static func importMaterial(_ source: URL, lecture: Lecture, course: Course) throws -> Material {
         let id = UUID()

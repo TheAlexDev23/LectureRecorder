@@ -2,7 +2,9 @@ import Foundation
 
 struct BacklogItem: Codable {
     var id: String
+    var kind: String
     var number: Int
+    var stem: String
     var title: String
     var transcript: String
     var materials: [String]
@@ -22,7 +24,7 @@ enum AgentPrompt {
 
     PHASE 2 — NOTES:
     Read all backlog transcripts, categorized materials and relevant existing course topics. Personal Notes are low-priority optional context; never elevate them over source evidence. Never alter Transcripts, Personal Notes, Materials/Inbox, backlog.json, or any non-generated input. Do not delete files.
-    Create Lectures/<COURSE> LEC <N>.md for each successfully handled lecture. YAML properties: type: lecture, course: course code, lecture: integer, lecture_id: supplied UUID string, date: source date, status: complete or needs-review, topics: list of quoted wikilinks, materials: list of quoted wikilinks, tags: [university/lecture]. Include a concise overview, organized explanations, definitions, algorithms/proofs or worked examples where supported, key takeaways, questions to review, and source links. Use Obsidian wikilinks, headings, callouts, LaTeX math and fenced code when useful. Link claims to transcript block IDs, e.g. [[CSC263 LEC 5 - Transcript#^t12]], and materials with page references, e.g. [[CSC263 L005 - Slides.pdf#page=8]]. Never fabricate quotations, timestamps, page numbers, examples presented in class, or instructor intent. Label your supplemental explanation separately from what was taught.
+    Each backlog entry supplies kind (lecture or tutorial), number, and stem (for example LEC 5 or TUT 3). Create Lectures/<COURSE> <STEM>.md for every successfully handled session. YAML properties: type: the supplied kind, course: course code, session_kind: supplied kind, session_number: integer, lecture_id: supplied UUID string, date: source date, status: complete or needs-review, topics: list of quoted wikilinks, materials: list of quoted wikilinks, tags containing university/lecture or university/tutorial as appropriate. Tutorials are structurally distinct sessions: emphasize worked problems, procedures, questions, and new content without relabelling them as lectures. Include a concise overview, organized explanations, definitions, algorithms/proofs or worked examples where supported, key takeaways, questions to review, and source links. Use Obsidian wikilinks, headings, callouts, LaTeX math and fenced code when useful. Link claims to transcript block IDs, e.g. [[CSC263 LEC 5 - Transcript#^t12]] or [[MTH135 TUT 3 - Transcript#^t12]], and materials with page references. Never fabricate quotations, timestamps, page numbers, examples presented in class, or instructor intent. Label supplemental explanation separately from what was taught.
     MATH AND CS FORMATTING:
     Obsidian renders LaTeX-style mathematics through MathJax. Actively use it in math and computer-science lectures for definitions, equations, recurrences, asymptotic bounds, sets, matrices, invariants, proofs and derivations whenever it makes the notes clearer. Use $...$ for inline math (single dollar sign at each end), for example $T(n) = O(n \\log n)$. Use display math with $$ on its own line, the expression on the following line(s), and a closing $$ on its own line. For multiline derivations, use an aligned environment inside that display block. Do not use \\( ... \\) or \\[ ... \\] as delimiters, and do not put rendered mathematics inside code fences. Explain symbols and assumptions in prose, preserve the course's notation, and cite the sources for formulas and proof steps. Do not invent a formula from unclear spoken symbols; use accompanying materials to resolve it or report the uncertainty.
 

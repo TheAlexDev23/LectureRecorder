@@ -112,15 +112,15 @@ struct ContentView: View {
                 }
             }
             Button { textbooks = true } label: { Label("Textbooks (\((course.textbooks ?? []).count))", systemImage: "books.vertical") }
-            Button { newLecture = true } label: { Label("New Lecture", systemImage: "mic.fill") }
+            Button { newLecture = true } label: { Label("New Recording", systemImage: "mic.fill") }
                 .buttonStyle(.borderedProminent).disabled(store.recordingID != nil || store.busyRecording || store.isProcessing(course.id) || store.fatalStorageError)
         }.padding(22)
     }
     private func lectureList(_ course: Course) -> some View {
         List(selection: $store.selectedLecture) {
-            ForEach(store.library.lectures.filter { $0.courseID == course.id }.sorted { $0.number > $1.number }) { lecture in
+            ForEach(store.library.lectures.filter { $0.courseID == course.id }.sorted { $0.date > $1.date }) { lecture in
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("LEC \(lecture.number)").font(.headline)
+                    Text(lecture.stem).font(.headline)
                     if !lecture.title.isEmpty { Text(lecture.title).lineLimit(2) }
                     Text(lecture.date.formatted(date: .abbreviated, time: .omitted)).font(.caption).foregroundStyle(.secondary)
                     StatusPill(status: lecture.status, paused: store.recordingID == lecture.id && store.recordingPaused)
@@ -158,8 +158,8 @@ struct LectureView: View {
         VStack(spacing: 0) {
             HStack {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("\(course.code) · LEC \(lecture.number)").font(.title2.weight(.semibold))
-                    Text(lecture.title.isEmpty ? "Lecture workspace" : lecture.title).foregroundStyle(.secondary)
+                    Text("\(course.code) · \(lecture.stem)").font(.title2.weight(.semibold))
+                    Text(lecture.title.isEmpty ? "\(lecture.sessionKind.label) workspace" : lecture.title).foregroundStyle(.secondary)
                 }
                 Spacer()
                 if store.recordingID == lecture.id {
@@ -183,8 +183,8 @@ struct LectureView: View {
                     if lecture.segments.isEmpty {
                         VStack(spacing: 12) {
                             Image(systemName: "waveform").font(.largeTitle).foregroundStyle(.tertiary)
-                            Text(lecture.status == .recording ? (store.recordingPaused ? "Paused — press Resume to continue" : "Listening…") : "No transcript yet").font(.headline)
-                            Text("Finalized speech appears here with audio timestamps. On macOS 15, audio is saved for transcription after upgrading.").font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                            Text(lecture.status == .recording ? (store.recordingPaused ? "Paused — press Resume to continue" : store.library.settings.selectedTranscriptionProvider == .microsoft ? "Recording audio…" : "Listening…") : "No transcript yet").font(.headline)
+                            Text(lecture.status == .recording && store.library.settings.selectedTranscriptionProvider == .microsoft ? "Live transcription is unavailable with Microsoft. The complete recording will be transcribed after Stop & Save." : "Finalized speech appears here with audio timestamps.").font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
                         }.padding(28).frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else {
                         ScrollViewReader { proxy in
@@ -256,20 +256,24 @@ struct LectureSheet: View {
     @Environment(\.dismiss) var dismiss
     @State private var number = 1
     @State private var title = ""
+    @State private var kind: SessionKind = .lecture
     @State private var error: String?
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("New lecture · \(store.currentCourse?.code ?? "")").font(.title2.bold())
-            TextField("Lecture number", value: $number, format: .number)
+            Text("New recording · \(store.currentCourse?.code ?? "")").font(.title2.bold())
+            Picker("Session type", selection: $kind) { ForEach(SessionKind.allCases) { Text($0.label).tag($0) } }.pickerStyle(.segmented)
+            TextField("\(kind.label) number", value: $number, format: .number)
             TextField("Title (optional)", text: $title)
             Text("Recording starts when you press Start. You can attach slides and take notes while recording.").foregroundStyle(.secondary)
             if store.busyRecording { ProgressView("Preparing microphone and speech assets…") }
             if let error { Text(error).foregroundStyle(.red) }
-            HStack { Button("Cancel") { dismiss() }.disabled(store.busyRecording); Spacer(); Button("Start Recording") { Task { do { try await store.startLecture(number: number, title: title); dismiss() } catch { self.error = error.localizedDescription } } }.buttonStyle(.borderedProminent).disabled(store.busyRecording) }
+            HStack { Button("Cancel") { dismiss() }.disabled(store.busyRecording); Spacer(); Button("Start Recording") { Task { do { try await store.startLecture(number: number, title: title, kind: kind); dismiss() } catch { self.error = error.localizedDescription } } }.buttonStyle(.borderedProminent).disabled(store.busyRecording) }
         }.textFieldStyle(.roundedBorder).padding(28).frame(width: 440)
             .interactiveDismissDisabled(store.busyRecording)
-            .onAppear { number = (store.library.lectures.filter { $0.courseID == store.selectedCourse }.map(\.number).max() ?? 0) + 1 }
+            .onAppear { updateNumber() }
+            .onChange(of: kind) { _, _ in updateNumber() }
     }
+    private func updateNumber() { number = (store.library.lectures.filter { $0.courseID == store.selectedCourse && $0.sessionKind == kind }.map(\.number).max() ?? 0) + 1 }
 }
 struct QueueView: View {
     @EnvironmentObject var store: Store
@@ -291,10 +295,10 @@ struct QueueView: View {
                                 HStack {
                                     Text(course.code).font(.headline); Spacer()
                                     if store.isProcessing(course.id) { ProgressView().controlSize(.small); Text("Processing…") }
-                                    else { Button("Process \(backlog.count) Lectures") { store.processCourse(course.id) }.disabled(backlog.isEmpty) }
+                                    else { Button("Process \(backlog.count) Sessions") { store.processCourse(course.id) }.disabled(backlog.isEmpty) }
                                 }
                                 ForEach(backlog) { lecture in
-                                    HStack { Text("LEC \(lecture.number) · \(lecture.title)"); Spacer(); if lecture.materials.isEmpty { Label("Missing materials", systemImage: "exclamationmark.triangle").foregroundStyle(.orange) } }.font(.callout)
+                                    HStack { Text("\(lecture.stem) · \(lecture.title)"); Spacer(); if lecture.materials.isEmpty { Label("Missing materials", systemImage: "exclamationmark.triangle").foregroundStyle(.orange) } }.font(.callout)
                                 }
                             }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
                         }
@@ -332,6 +336,9 @@ struct QueueView: View {
 struct SettingsView: View {
     @EnvironmentObject var store: Store
     @State private var courseToForget: Course?
+    @State private var openRouterKey = ""
+    @State private var keyStored = OpenRouterKeychain.read() != nil
+    @State private var keyMessage: String?
     var body: some View {
         Form {
             Section("Obsidian") {
@@ -347,6 +354,21 @@ struct SettingsView: View {
             }
             Section("Speech & Codex") {
                 TextField("Speech locale", text: $store.library.settings.locale)
+                Picker("Transcription", selection: Binding(get: { store.library.settings.selectedTranscriptionProvider }, set: { store.library.settings.transcriptionProvider = $0; store.save() })) {
+                    ForEach(TranscriptionProvider.allCases) { Text($0.label).tag($0) }
+                }
+                if store.library.settings.selectedTranscriptionProvider == .microsoft {
+                    SecureField(keyStored ? "OpenRouter key stored in Keychain" : "OpenRouter API key", text: $openRouterKey)
+                    HStack {
+                        Button(keyStored ? "Replace Key" : "Save Key") {
+                            do { try OpenRouterKeychain.save(openRouterKey); openRouterKey = ""; keyStored = true; keyMessage = "Saved securely in macOS Keychain." }
+                            catch { keyMessage = error.localizedDescription }
+                        }.disabled(openRouterKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        if keyStored { Button("Remove Key", role: .destructive) { OpenRouterKeychain.remove(); keyStored = false; keyMessage = "Key removed." } }
+                    }
+                    if let keyMessage { Text(keyMessage).font(.caption).foregroundStyle(.secondary) }
+                    Text("Microsoft transcription runs on the complete saved recording after Stop & Save. It requires internet access and has no live transcript.").font(.caption).foregroundStyle(.secondary)
+                }
                 TextField("Codex executable", text: $store.library.settings.codexPath)
                 Text("Model: gpt-5.6-terra · Reasoning: medium\nRun codex login once in Terminal. SpeechAnalyzer requires macOS 26 and supported hardware/language; language assets may download on first use.").font(.caption).foregroundStyle(.secondary)
             }
@@ -376,6 +398,7 @@ struct SettingsView: View {
             .onChange(of: store.library.settings.coursesPath) { _, _ in store.save() }
             .onChange(of: store.library.settings.locale) { _, _ in store.save() }
             .onChange(of: store.library.settings.codexPath) { _, _ in store.save() }
+            .onChange(of: store.library.settings.transcriptionProvider) { _, _ in store.save() }
     }
 }
 
