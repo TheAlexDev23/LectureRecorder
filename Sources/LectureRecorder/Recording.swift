@@ -59,12 +59,18 @@ import CoreMedia
 }
 
 // AVAudioEngine owns the callback thread. Conversion and file writes are serialized by its tap.
-private final class AudioSink: @unchecked Sendable {
+final class AudioSink: @unchecked Sendable {
     let file: AVAudioFile
     let converter: AVAudioConverter?
     let outputFormat: AVAudioFormat?
     let deliver: ((AVAudioPCMBuffer) -> Void)?
     let failure: (String) -> Void
+    private let lock = NSLock()
+    private var recordedFrames: AVAudioFramePosition = 0
+    var duration: TimeInterval {
+        lock.lock(); defer { lock.unlock() }
+        return Double(recordedFrames) / file.processingFormat.sampleRate
+    }
     var hasFailed = false
     init(url: URL, input: AVAudioFormat, output: AVAudioFormat?, deliver: ((AVAudioPCMBuffer) -> Void)?, failure: @escaping (String) -> Void) throws {
         file = try AVAudioFile(forWriting: url, settings: input.settings)
@@ -75,9 +81,11 @@ private final class AudioSink: @unchecked Sendable {
         if output != nil && converter == nil { throw AppFailure("Could not convert microphone audio for SpeechAnalyzer.") }
     }
     func consume(_ buffer: AVAudioPCMBuffer) {
+        lock.lock(); defer { lock.unlock() }
         guard !hasFailed else { return }
         do {
             try file.write(from: buffer)
+            recordedFrames += AVAudioFramePosition(buffer.frameLength)
             guard let converter, let outputFormat else { return }
             let capacity = AVAudioFrameCount(ceil(Double(buffer.frameLength) * outputFormat.sampleRate / buffer.format.sampleRate)) + 64
             guard let converted = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: capacity) else { throw AppFailure("Could not allocate speech audio buffer.") }
@@ -104,7 +112,8 @@ private final class AudioSink: @unchecked Sendable {
     private var sink: AudioSink?
     private var speech: AnyObject?
     private var sleepActivity: NSObjectProtocol?
-    var started: Date?
+    private(set) var isPaused = false
+    var duration: TimeInterval { sink?.duration ?? 0 }
     func start(url: URL, locale: String, onSegments: @escaping @MainActor ([Segment]) -> Void, onError: @escaping @MainActor (String) -> Void) async throws -> String? {
         guard await AVCaptureDevice.requestAccess(for: .audio) else { throw AppFailure("Microphone access was denied. Enable Lecture Recorder in System Settings → Privacy & Security → Microphone.") }
         var output: AVAudioFormat?
@@ -134,7 +143,7 @@ private final class AudioSink: @unchecked Sendable {
             input.installTap(onBus: 0, bufferSize: 4096, format: format) { buffer, _ in sink.consume(buffer) }
             engine.prepare()
             try engine.start()
-            started = Date()
+            isPaused = false
             sleepActivity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .idleSystemSleepDisabled], reason: "Recording a lecture")
             return warning
         } catch {
@@ -145,12 +154,23 @@ private final class AudioSink: @unchecked Sendable {
             throw error
         }
     }
+    func pause() {
+        guard sink != nil, !isPaused else { return }
+        engine.pause()
+        isPaused = true
+    }
+    func resume() throws {
+        guard sink != nil, isPaused else { return }
+        // Keep the tap, file, converter and analyzer alive across the pause.
+        try engine.start()
+        isPaused = false
+    }
     func stop() async throws {
         engine.stop()
         engine.inputNode.removeTap(onBus: 0)
         sink = nil
         if let activity = sleepActivity { ProcessInfo.processInfo.endActivity(activity); sleepActivity = nil }
-        defer { speech = nil; started = nil }
+        defer { speech = nil; isPaused = false }
         if #available(macOS 26.0, *), let session = speech as? SpeechSession { try await session.finish() }
     }
     func retry(url: URL, locale: String, onSegments: @escaping @MainActor ([Segment]) -> Void) async throws {

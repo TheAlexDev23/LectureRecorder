@@ -123,7 +123,7 @@ struct ContentView: View {
                     Text("LEC \(lecture.number)").font(.headline)
                     if !lecture.title.isEmpty { Text(lecture.title).lineLimit(2) }
                     Text(lecture.date.formatted(date: .abbreviated, time: .omitted)).font(.caption).foregroundStyle(.secondary)
-                    StatusPill(status: lecture.status)
+                    StatusPill(status: lecture.status, paused: store.recordingID == lecture.id && store.recordingPaused)
                 }.padding(.vertical, 7).tag(lecture.id)
             }
         }
@@ -131,8 +131,9 @@ struct ContentView: View {
 }
 struct StatusPill: View {
     let status: LectureStatus
+    var paused = false
     var body: some View {
-        Text(label).font(.caption.weight(.medium)).padding(.horizontal, 7).padding(.vertical, 3)
+        Text(paused ? "Paused" : label).font(.caption.weight(.medium)).padding(.horizontal, 7).padding(.vertical, 3)
             .background(color.opacity(0.12), in: Capsule()).foregroundStyle(color)
     }
     var label: String {
@@ -162,12 +163,13 @@ struct LectureView: View {
                 }
                 Spacer()
                 if store.recordingID == lecture.id {
-                    TimelineView(.periodic(from: .now, by: 1)) { context in
-                        Label(timestamp(context.date.timeIntervalSince(store.recorder.started ?? context.date)), systemImage: "record.circle.fill").foregroundStyle(.red).monospacedDigit()
+                    TimelineView(.periodic(from: .now, by: 1)) { _ in
+                        Label(timestamp(store.recorder.duration), systemImage: store.recordingPaused ? "pause.circle.fill" : "record.circle.fill").foregroundStyle(store.recordingPaused ? .orange : .red).monospacedDigit()
                     }
+                    Button(store.recordingPaused ? "Resume" : "Pause") { store.toggleRecordingPause() }.disabled(store.busyRecording)
                     Button("Stop & Save") { Task { await store.stopRecording() } }.buttonStyle(.borderedProminent).tint(.red).disabled(store.busyRecording)
                 } else {
-                    StatusPill(status: lecture.status)
+                    StatusPill(status: lecture.status, paused: store.recordingID == lecture.id && store.recordingPaused)
                     if lecture.status == .needsTranscription {
                         Button("Retry Transcription") { Task { await store.retryTranscription(lecture.id) } }.disabled(store.busyRecording || store.recordingID != nil)
                     }
@@ -181,7 +183,7 @@ struct LectureView: View {
                     if lecture.segments.isEmpty {
                         VStack(spacing: 12) {
                             Image(systemName: "waveform").font(.largeTitle).foregroundStyle(.tertiary)
-                            Text(lecture.status == .recording ? "Listening…" : "No transcript yet").font(.headline)
+                            Text(lecture.status == .recording ? (store.recordingPaused ? "Paused — press Resume to continue" : "Listening…") : "No transcript yet").font(.headline)
                             Text("Finalized speech appears here with audio timestamps. On macOS 15, audio is saved for transcription after upgrading.").font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
                         }.padding(28).frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else {

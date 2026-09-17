@@ -1,4 +1,5 @@
 import XCTest
+import AVFoundation
 import PDFKit
 import CoreText
 @testable import LectureRecorder
@@ -10,6 +11,35 @@ final class LectureRecorderTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     }
     override func tearDownWithError() throws { try FileManager.default.removeItem(at: root) }
+    func testRecordingSinkAppendsAudioAndCountsOnlyCapturedFrames() throws {
+        let url = root.appendingPathComponent("resume.caf")
+        let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1)!
+        let output = AVAudioFormat(standardFormatWithSampleRate: 16000, channels: 1)!
+        var deliveredFrames = 0
+        var sink: AudioSink? = try AudioSink(url: url, input: format, output: output, deliver: {
+            deliveredFrames += Int($0.frameLength)
+        }, failure: { XCTFail($0) })
+        func capture(_ value: Float) {
+            let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4800)!
+            buffer.frameLength = 4800
+            for index in 0..<4800 { buffer.floatChannelData![0][index] = value }
+            sink!.consume(buffer)
+        }
+        capture(0.25)
+        XCTAssertEqual(sink!.duration, 0.1, accuracy: 0.00001)
+        // A pause supplies no buffers. Continuing must append, not replace prior audio.
+        capture(-0.25)
+        XCTAssertEqual(sink!.duration, 0.2, accuracy: 0.00001)
+        XCTAssertGreaterThan(deliveredFrames, 3000)
+        XCTAssertLessThanOrEqual(deliveredFrames, 3200)
+        sink = nil
+        let audio = try AVAudioFile(forReading: url)
+        XCTAssertEqual(audio.length, 9600)
+        let saved = AVAudioPCMBuffer(pcmFormat: audio.processingFormat, frameCapacity: 9600)!
+        try audio.read(into: saved)
+        XCTAssertEqual(saved.floatChannelData![0][0], 0.25)
+        XCTAssertEqual(saved.floatChannelData![0][4800], -0.25)
+    }
     func makePDF(_ pages: [String], name: String = "Book.pdf") throws -> URL {
         let url = root.appendingPathComponent(name)
         var box = CGRect(x: 0, y: 0, width: 600, height: 800)

@@ -7,6 +7,7 @@ import AppKit
     @Published var selectedLecture: UUID?
     @Published var recordingID: UUID?
     @Published var busyRecording = false
+    @Published private(set) var recordingPaused = false
     @Published var banner: String?
     @Published var importingTextbooks: Set<UUID> = []
     @Published var fatalStorageError = false
@@ -116,11 +117,20 @@ import AppKit
             throw error
         }
     }
+    func toggleRecordingPause() {
+        guard recordingID != nil, !busyRecording else { return }
+        do {
+            if recordingPaused { try recorder.resume() } else { recorder.pause() }
+            recordingPaused = recorder.isPaused
+        } catch {
+            banner = "Could not resume recording: \(error.localizedDescription). Recording remains paused; retry Resume or Stop & Save."
+        }
+    }
     func stopRecording() async {
         guard let id = recordingID, !busyRecording else { return }
         busyRecording = true
-        let duration = recorder.started.map { Date().timeIntervalSince($0) } ?? 0
-        defer { recordingID = nil; busyRecording = false; save() }
+        let duration = recorder.duration
+        defer { recordingID = nil; recordingPaused = false; busyRecording = false; save() }
         do {
             try await recorder.stop()
             editLecture(id) { $0.duration = duration }
