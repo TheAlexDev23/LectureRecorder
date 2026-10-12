@@ -170,6 +170,54 @@ final class LectureRecorderTests: XCTestCase {
         XCTAssertEqual(file.processingFormat.sampleRate, 48000)
         XCTAssertEqual(file.processingFormat.channelCount, 1)
     }
+    func makeRecording(_ name: String, seconds: Int) throws -> URL {
+        let url = root.appendingPathComponent(name)
+        let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1)!
+        let file = try AVAudioFile(forWriting: url, settings: format.settings)
+        let frames = AVAudioFrameCount(48000 * seconds)
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: max(frames, 1))!
+        buffer.frameLength = frames
+        for index in 0..<Int(frames) { buffer.floatChannelData![0][index] = 0.3 * sin(Float(index) * 0.05) + Float.random(in: -0.01...0.01) }
+        if frames > 0 { try file.write(from: buffer) }
+        return url
+    }
+    func testCompressionKeepsTranscriberInputIdentical() throws {
+        let url = try makeRecording("lecture.caf", seconds: 3)
+        let original = root.appendingPathComponent("original.caf")
+        try FileManager.default.copyItem(at: url, to: original)
+        try StoredAudio.compress(url)
+        XCTAssertTrue(try StoredAudio.isCompressed(url))
+        let size = { (url: URL) in try FileManager.default.attributesOfItem(atPath: url.path)[.size] as! Int }
+        XCTAssertLessThan(try size(url) * 6, try size(original))
+        let before = root.appendingPathComponent("before.wav"), after = root.appendingPathComponent("after.wav")
+        try StoredAudio.speechWAV(original, to: before)
+        try StoredAudio.speechWAV(url, to: after)
+        // Headers differ only in the channel label; the samples transcribers receive must match exactly.
+        func samples(_ url: URL) throws -> [Float] {
+            let file = try AVAudioFile(forReading: url)
+            let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length))!
+            try file.read(into: buffer)
+            return Array(UnsafeBufferPointer(start: buffer.floatChannelData![0], count: Int(buffer.frameLength)))
+        }
+        XCTAssertEqual(try samples(before).count, 48000)
+        XCTAssertEqual(try samples(before), try samples(after))
+        // Already compressed recordings are left alone.
+        let compressed = try Data(contentsOf: url)
+        try StoredAudio.compress(url)
+        XCTAssertEqual(try Data(contentsOf: url), compressed)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path).filter { $0.contains("compressing") }, [])
+    }
+    func testFailedCompressionKeepsOriginal() throws {
+        let url = root.appendingPathComponent("broken.caf")
+        try Vault.write("not audio", to: url)
+        XCTAssertThrowsError(try StoredAudio.compress(url))
+        XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "not audio")
+    }
+    func testCompressionHandlesRecordingWithoutAudio() throws {
+        let url = try makeRecording("empty.caf", seconds: 0)
+        try StoredAudio.compress(url)
+        XCTAssertEqual(try AVAudioFile(forReading: url).length, 0)
+    }
     func testAudioEngineExceptionsBecomeSwiftErrors() throws {
         // AVAudioEngine raises an Objective-C exception for a second tap, as it does for a vanished microphone.
         let mixer = AVAudioMixerNode()

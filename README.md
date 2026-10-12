@@ -35,7 +35,7 @@ Read [the prompt and output walkthrough](docs/WORKFLOW.md) for the exact intende
 ## Data and recovery
 
 - Local library: `~/Library/Application Support/LectureRecorder/library.json` (atomic JSON writes).
-- Audio: `Recordings/<lecture UUID>.caf` under the same directory. Full-resolution PCM audio can take substantial disk space. Audio is not sent to Codex or copied into Obsidian automatically.
+- Audio: `Recordings/<lecture UUID>.caf` under the same directory. While recording, audio is written as full-rate PCM so it stays readable after a crash or power loss. After **Stop & Save** it is converted to 16 kHz 16-bit mono Apple Lossless (about 45 MB per hour instead of about 690 MB). Both transcribers only read 16 kHz 16-bit audio, so retranscribing a compressed recording gives them exactly the samples they would have received from the original. Recordings saved before this change are compressed in the background at launch; if a conversion fails or does not verify, the original audio is kept. Audio is not sent to Codex or copied into Obsidian automatically.
 - Jobs: `Jobs/<job UUID>/` contains `Before/` (course snapshot), `Course/` (agent workspace), prompt, structured report, stdout event log and stderr log. These snapshots include materials and are retained until you remove them yourself.
 - Courses are pinned to the directory selected when created. Changing Settings changes the destination for new courses; it does not silently move existing notes.
 - Removing a course from the sidebar archives it. Files, recordings and lectures remain intact; restore the course in Settings.

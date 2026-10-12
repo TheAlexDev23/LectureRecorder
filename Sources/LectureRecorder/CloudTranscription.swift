@@ -91,14 +91,8 @@ enum MicrosoftTranscriber {
         try await Task.detached(priority: .utility) {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             let normalized = folder.appendingPathComponent("normalized.wav")
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/afconvert")
-            process.arguments = [file.path, normalized.path, "-f", "WAVE", "-d", "LEI16@16000", "-c", "1"]
-            let errors = Pipe(); process.standardError = errors
-            try process.run(); process.waitUntilExit()
-            guard process.terminationStatus == 0 else {
-                let detail = String(data: errors.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-                throw AppFailure("Could not prepare audio for Microsoft transcription. \(detail)")
+            do { try StoredAudio.speechWAV(file, to: normalized) } catch {
+                throw AppFailure("Could not prepare audio for Microsoft transcription. \(error.localizedDescription)")
             }
             let input = try AVAudioFile(forReading: normalized)
             let rate = input.processingFormat.sampleRate

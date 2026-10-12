@@ -24,6 +24,7 @@ import UniformTypeIdentifiers
             ContentView().environmentObject(store)
                 .frame(minWidth: 980, minHeight: 640)
                 .onAppear { delegate.store = store; NSApp.setActivationPolicy(.regular); NSApp.activate(ignoringOtherApps: true) }
+                .task { await store.compressSavedRecordings() }
         }
         .defaultSize(width: 1220, height: 790)
         SwiftUI.Settings { SettingsView().environmentObject(store) }

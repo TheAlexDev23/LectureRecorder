@@ -18,6 +18,7 @@ import AppKit
     private var autosave: Task<Void, Never>?
     // Typed notes stay out of the published library until autosave, so a keystroke doesn't re-render every view.
     private var noteDrafts: [UUID: String] = [:]
+    private var compressingSavedRecordings = false
     private let writer: LibraryWriter
     init(root: URL? = nil) {
         self.root = root ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("LectureRecorder")
@@ -161,6 +162,7 @@ import AppKit
         do {
             try await recorder.stop()
             editLecture(id) { $0.duration = duration }
+            do { try await compressRecording(id) } catch { banner = "Kept the full-size recording because compression failed: \(error.localizedDescription)" }
             guard let lecture = library.lectures.first(where: { $0.id == id }) else { return }
             if library.settings.selectedTranscriptionProvider == .microsoft {
                 editLecture(id) { $0.status = .transcribing; $0.error = nil }
@@ -173,6 +175,21 @@ import AppKit
                 editLecture(id) { $0.status = .needsTranscription; if $0.error == nil { $0.error = "No speech was recognized. Retry transcription from audio." } }
             } else { try exportAndQueue(id) }
         } catch { editLecture(id) { $0.duration = duration; $0.status = .needsTranscription; $0.error = error.localizedDescription }; banner = error.localizedDescription }
+    }
+    func compressRecording(_ id: UUID) async throws {
+        let url = audioURL(id)
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        try await Task.detached(priority: .utility) { try StoredAudio.compress(url) }.value
+    }
+    // Shrinks recordings saved before compression existed. Runs once per launch; failures keep the original audio.
+    func compressSavedRecordings() async {
+        guard !compressingSavedRecordings else { return }
+        compressingSavedRecordings = true
+        var failures = 0
+        for id in library.lectures.map(\.id) where id != recordingID {
+            do { try await compressRecording(id) } catch { failures += 1 }
+        }
+        if failures > 0 { banner = "\(failures) saved recording\(failures == 1 ? "" : "s") could not be compressed and kept full-size audio." }
     }
     func exportAndQueue(_ id: UUID) throws {
         guard let lecture = library.lectures.first(where: { $0.id == id }), let course = library.courses.first(where: { $0.id == lecture.courseID }) else { return }
