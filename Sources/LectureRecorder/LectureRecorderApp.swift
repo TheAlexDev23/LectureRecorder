@@ -5,7 +5,7 @@ import UniformTypeIdentifiers
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
     var store: Store?
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        store?.save()
+        store?.flush()
         guard store?.activeWork == true else { return .terminateNow }
         let alert = NSAlert()
         alert.messageText = "Work is still active"
@@ -203,7 +203,7 @@ struct LectureView: View {
                 }.frame(minWidth: 240, maxWidth: .infinity)
                 VStack(alignment: .leading, spacing: 0) {
                     HStack { Label("YOUR NOTES", systemImage: "square.and.pencil").font(.caption.bold()); Spacer(); Text("Autosaved").font(.caption) }.foregroundStyle(.secondary).padding(16)
-                    TextEditor(text: Binding(get: { store.library.lectures.first(where: { $0.id == lecture.id })?.notes ?? "" }, set: { store.notes(lecture.id, value: $0) }))
+                    TextEditor(text: Binding(get: { store.noteText(lecture.id) }, set: { store.notes(lecture.id, value: $0) }))
                         .font(.body).scrollContentBackground(.hidden).padding(.horizontal, 12).disabled(store.isProcessing(course.id))
                 }.frame(minWidth: 210, maxWidth: .infinity)
             }

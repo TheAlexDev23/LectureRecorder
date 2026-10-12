@@ -16,8 +16,12 @@ import AppKit
     let runner = AgentRunner()
     private var tasks: [UUID: Task<Void, Never>] = [:]
     private var autosave: Task<Void, Never>?
+    // Typed notes stay out of the published library until autosave, so a keystroke doesn't re-render every view.
+    private var noteDrafts: [UUID: String] = [:]
+    private let writer: LibraryWriter
     init(root: URL? = nil) {
         self.root = root ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("LectureRecorder")
+        writer = LibraryWriter(url: self.root.appendingPathComponent("library.json"))
         do {
             try FileManager.default.createDirectory(at: self.root, withIntermediateDirectories: true)
             let file = self.root.appendingPathComponent("library.json")
@@ -39,25 +43,40 @@ import AppKit
     var currentCourse: Course? { library.courses.first { $0.id == selectedCourse } }
     var currentLecture: Lecture? { library.lectures.first { $0.id == selectedLecture } }
     var activeWork: Bool { recordingID != nil || busyRecording || !tasks.isEmpty || !importingTextbooks.isEmpty }
+    // Encoding the whole library takes long enough to stall typing, so writes happen in the background.
     func save() {
         guard !fatalStorageError else { return }
-        do {
-            let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            try encoder.encode(library).write(to: root.appendingPathComponent("library.json"), options: .atomic)
-        } catch { banner = "Saving failed: \(error.localizedDescription)" }
+        writer.schedule(library) { error in Task { @MainActor [weak self] in self?.banner = "Saving failed: \(error.localizedDescription)" } }
     }
-    func editLecture(_ id: UUID, _ change: (inout Lecture) -> Void) {
+    // Writes everything synchronously, including notes still waiting for autosave. Use before quitting.
+    func flush() {
+        commitNotes()
+        guard !fatalStorageError else { return }
+        save()
+        do { try writer.flush() } catch { banner = "Saving failed: \(error.localizedDescription)" }
+    }
+    func editLecture(_ id: UUID, persist: Bool = true, _ change: (inout Lecture) -> Void) {
         guard let index = library.lectures.firstIndex(where: { $0.id == id }) else { return }
-        change(&library.lectures[index]); save()
+        change(&library.lectures[index])
+        if persist { save() }
     }
+    func noteText(_ id: UUID) -> String { noteDrafts[id] ?? library.lectures.first { $0.id == id }?.notes ?? "" }
     func notes(_ id: UUID, value: String) {
-        guard let index = library.lectures.firstIndex(where: { $0.id == id }) else { return }
-        library.lectures[index].notes = value
+        noteDrafts[id] = value
         autosave?.cancel()
         autosave = Task {
             try? await Task.sleep(for: .milliseconds(400))
             guard !Task.isCancelled else { return }
-            save()
+            commitNotes()
+        }
+    }
+    private func commitNotes() {
+        guard !noteDrafts.isEmpty else { return }
+        let drafts = noteDrafts
+        noteDrafts = [:]
+        for (id, value) in drafts { if let index = library.lectures.firstIndex(where: { $0.id == id }) { library.lectures[index].notes = value } }
+        save()
+        for id in drafts.keys {
             if let lecture = library.lectures.first(where: { $0.id == id }), let course = library.courses.first(where: { $0.id == lecture.courseID }) {
                 do { try Vault.exportNotes(lecture, course: course) } catch { banner = error.localizedDescription }
             }
@@ -106,11 +125,16 @@ import AppKit
         do {
             let id = lecture.id
             let warning = try await recorder.start(url: audioURL(id), locale: library.settings.locale, liveTranscription: library.settings.selectedTranscriptionProvider == .apple) { [weak self] segments in
-                self?.editLecture(id) { $0.segments.append(contentsOf: segments) }
+                // Live text is rebuilt from the audio if the app dies mid-recording, so skip rewriting the library per segment.
+                self?.editLecture(id, persist: false) { $0.segments.append(contentsOf: segments) }
             } onError: { [weak self] message in
                 self?.editLecture(id) { $0.error = message }
                 self?.banner = "Recording error: \(message). Stopping and preserving the available audio."
                 Task { await self?.stopRecording() }
+            } onInterrupted: { [weak self] message in
+                guard let self else { return }
+                recordingPaused = recorder.isPaused
+                banner = message
             }
             recordingID = id
             if let warning { banner = warning; editLecture(id) { $0.error = warning } }
@@ -203,6 +227,7 @@ import AppKit
     func backlog(_ courseID: UUID) -> [Lecture] { library.lectures.filter { $0.courseID == courseID && [.queued, .failed].contains($0.status) && $0.transcriptPath != nil }.sorted { $0.date < $1.date } }
     func processAll() { for course in library.courses where !course.archived { processCourse(course.id) } }
     func processCourse(_ courseID: UUID) {
+        commitNotes()
         let lectures = backlog(courseID)
         guard !fatalStorageError, !lectures.isEmpty, tasks[courseID] == nil, !importingTextbooks.contains(courseID), let course = library.courses.first(where: { $0.id == courseID }), !library.lectures.contains(where: { $0.courseID == courseID && [.recording, .transcribing].contains($0.status) }) else { return }
         let jobID = UUID()
@@ -261,5 +286,35 @@ import AppKit
                 banner = error.localizedDescription
             }
         }
+    }
+}
+
+// Serializes library writes off the main thread. Only the newest pending snapshot is written.
+final class LibraryWriter: @unchecked Sendable {
+    private let url: URL
+    private static let queue = DispatchQueue(label: "local.alex.LectureRecorder.library-writer", qos: .utility)
+    private let lock = NSLock()
+    private var pending: Library?
+    init(url: URL) { self.url = url }
+    func schedule(_ library: Library, onError: @escaping @Sendable (Error) -> Void) {
+        let idle = lock.withLock { () -> Bool in
+            defer { pending = library }
+            return pending == nil
+        }
+        guard idle else { return }
+        Self.queue.async { [self] in
+            do { try writePending() } catch { onError(error) }
+        }
+    }
+    func flush() throws { try Self.queue.sync { try writePending() } }
+    static func waitForPendingWrites() { queue.sync {} }
+    private func writePending() throws {
+        let library = lock.withLock { () -> Library? in
+            defer { pending = nil }
+            return pending
+        }
+        guard let library else { return }
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        try encoder.encode(library).write(to: url, options: .atomic)
     }
 }

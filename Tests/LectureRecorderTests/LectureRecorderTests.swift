@@ -3,6 +3,7 @@ import AVFoundation
 import PDFKit
 import CoreText
 @testable import LectureRecorder
+import AudioTap
 
 final class LectureRecorderTests: XCTestCase {
     var root: URL!
@@ -10,7 +11,10 @@ final class LectureRecorderTests: XCTestCase {
         root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     }
-    override func tearDownWithError() throws { try FileManager.default.removeItem(at: root) }
+    override func tearDownWithError() throws {
+        LibraryWriter.waitForPendingWrites()
+        try FileManager.default.removeItem(at: root)
+    }
     func testRecordingSinkAppendsAudioAndCountsOnlyCapturedFrames() throws {
         let url = root.appendingPathComponent("resume.caf")
         let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1)!
@@ -146,13 +150,67 @@ final class LectureRecorderTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: source.appendingPathComponent("Topics/A.md"), encoding: .utf8), "personal")
         XCTAssertEqual(try String(contentsOf: source.appendingPathComponent("Lectures/B.md"), encoding: .utf8), "summary")
     }
+    func testRecordingSinkKeepsFileFormatWhenMicrophoneChanges() throws {
+        let url = root.appendingPathComponent("switch.caf")
+        let builtIn = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1)!
+        let headset = AVAudioFormat(standardFormatWithSampleRate: 24000, channels: 2)!
+        var sink: AudioSink? = try AudioSink(url: url, input: builtIn, output: nil, deliver: nil, failure: { XCTFail($0) })
+        func capture(_ format: AVAudioFormat, frames: AVAudioFrameCount) {
+            let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames)!
+            buffer.frameLength = frames
+            for channel in 0..<Int(format.channelCount) { for index in 0..<Int(frames) { buffer.floatChannelData![channel][index] = 0.25 } }
+            sink!.consume(buffer)
+        }
+        capture(builtIn, frames: 4800)
+        for _ in 0..<10 { capture(headset, frames: 2400) }
+        XCTAssertFalse(sink!.hasFailed)
+        XCTAssertEqual(sink!.duration, 1.1, accuracy: 0.01)
+        sink = nil
+        let file = try AVAudioFile(forReading: url)
+        XCTAssertEqual(file.processingFormat.sampleRate, 48000)
+        XCTAssertEqual(file.processingFormat.channelCount, 1)
+    }
+    func testAudioEngineExceptionsBecomeSwiftErrors() throws {
+        // AVAudioEngine raises an Objective-C exception for a second tap, as it does for a vanished microphone.
+        let mixer = AVAudioMixerNode()
+        let engine = AVAudioEngine()
+        engine.attach(mixer)
+        let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1)!
+        try LRAudioTap.install(on: mixer, bus: 0, bufferSize: 4096, format: format) { _, _ in }
+        XCTAssertThrowsError(try LRAudioTap.install(on: mixer, bus: 0, bufferSize: 4096, format: format) { _, _ in }) { error in
+            XCTAssertTrue(error.localizedDescription.contains("microphone could not be started"), error.localizedDescription)
+        }
+        mixer.removeTap(onBus: 0)
+    }
+    @MainActor func testUnsavedNoteDraftsAreWrittenOnFlush() throws {
+        let store = Store(root: root)
+        store.library.settings.vaultPath = root.appendingPathComponent("vault").path
+        try store.addCourse(code: "CS145", name: "Design")
+        let lecture = Lecture(courseID: store.currentCourse!.id, number: 1, title: "")
+        store.library.lectures.append(lecture)
+        store.notes(lecture.id, value: "typed just before quitting")
+        XCTAssertEqual(store.noteText(lecture.id), "typed just before quitting")
+        store.flush()
+        XCTAssertEqual(Store(root: root).library.lectures.first?.notes, "typed just before quitting")
+    }
+    func testLibraryWriterKeepsNewestSnapshot() throws {
+        let writer = LibraryWriter(url: root.appendingPathComponent("library.json"))
+        for number in 1...20 {
+            var library = Library()
+            library.settings.locale = "en-\(number)"
+            writer.schedule(library) { XCTFail("\($0)") }
+        }
+        try writer.flush()
+        let saved = try JSONDecoder().decode(Library.self, from: Data(contentsOf: root.appendingPathComponent("library.json")))
+        XCTAssertEqual(saved.settings.locale, "en-20")
+    }
     @MainActor func testRecoveryAndArchiveAreNonDestructive() throws {
         let store = Store(root: root)
         store.library.settings.vaultPath = root.appendingPathComponent("vault").path
         try store.addCourse(code: "CSC263", name: "Trees")
         let course = store.currentCourse!
         store.library.lectures = [Lecture(courseID: course.id, number: 1, title: "", status: .recording)]
-        store.save()
+        store.flush()
         let restored = Store(root: root)
         XCTAssertEqual(restored.library.lectures[0].status, .needsTranscription)
         restored.archiveCourse(course.id, archived: true)
@@ -188,7 +246,7 @@ final class LectureRecorderTests: XCTestCase {
         try Vault.write("broken input", to: file)
         let store = Store(root: root)
         XCTAssertTrue(store.fatalStorageError)
-        store.save()
+        store.flush()
         XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), "broken input")
     }
     @MainActor func testCourseBatchWithFakeCodex() async throws {
@@ -197,6 +255,7 @@ final class LectureRecorderTests: XCTestCase {
         try store.addCourse(code: "CSC263", name: "Trees")
         let course = store.currentCourse!
         await store.importTextbooks([try makePDF(["Chapter 1 Trees", "AVL trees"])], courseID: course.id)
+        store.flush()
         XCTAssertEqual(Store(root: root).currentCourse?.textbooks?.count, 1)
         for number in [5, 6] {
             var lecture = Lecture(courseID: course.id, number: number, title: "Trees")
